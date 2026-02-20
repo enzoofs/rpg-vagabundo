@@ -137,7 +137,10 @@ CONSEQUENCIAS PERSISTENTES:
 - Nunca mostre numeros de relogios, reputacao ou economia ao jogador — apenas consequencias narrativas.
 
 ROLAGENS:
-- Quando pedir rolagem, SEMPRE especifique: qual dado (d4, d6, d8, d10, d12, d20), modificador e habilidade. Ex: "Role um d20+5 de Percepcao", "Role 2d6+3 de dano". NUNCA diga apenas "faca um teste" sem especificar o dado.
+- CONSULTE A FICHA DO PC antes de pedir qualquer rolagem.
+- SEMPRE especifique: qual dado, o bonus EXATO (calculado da ficha) e de onde vem. Ex: "Role 1d20+5 de Percepcao (SAB +2 + prof +3)". NUNCA diga apenas "faca um teste" sem o bonus.
+- Para ataques, diga a arma, o bonus de ataque e o dano. Ex: "Role 1d20+6 para ataque com Espada Curta (DES +3 + prof +3). Se acertar: 1d6+3 de dano + 2d6 de Ataque Furtivo."
+- Se a ficha do PC nao estiver registrada, peca ao jogador para registrar com !pc.
 
 COMBATE:
 - Alterne descricao curta com clareza mecanica (quem, onde, quanto).
@@ -453,6 +456,7 @@ function freshGame() {
     inventory: { items: [], gold: 0 },
     quests: [],       // { name, status: 'active'|'done' }
     portraits: {},    // npcName -> imageUrl (gerados por DALL-E)
+    pcSheets: {},     // playerId -> { name, class, level, stats, weapons, skills, features }
   };
 }
 
@@ -484,6 +488,7 @@ function serializeGame(game) {
     inventory: game.inventory || { items: [], gold: 0 },
     quests: game.quests || [],
     portraits: game.portraits || {},
+    pcSheets: game.pcSheets || {},
   }, null, 2);
 }
 
@@ -522,6 +527,7 @@ function deserializeGame(json) {
   game.inventory = data.inventory || { items: [], gold: 0 };
   game.quests = data.quests || [];
   game.portraits = data.portraits || {};
+  game.pcSheets = data.pcSheets || {};
   return game;
 }
 
@@ -681,6 +687,89 @@ function parseNpcArgs(tokens) {
   if (!name || hp == null || ac == null || init == null) return null;
   if (isNaN(hp) || isNaN(ac) || isNaN(init)) return null;
   return { name, hp, ac, init, notes };
+}
+
+// ---------------------------------------------------------------------------
+// Ficha de PC — utilidades
+// ---------------------------------------------------------------------------
+const STAT_NAMES = { for: 'Forca', des: 'Destreza', con: 'Constituicao', int: 'Inteligencia', sab: 'Sabedoria', car: 'Carisma' };
+const STAT_SHORT = { for: 'FOR', des: 'DES', con: 'CON', int: 'INT', sab: 'SAB', car: 'CAR' };
+
+function abilityMod(score) {
+  return Math.floor((score - 10) / 2);
+}
+
+function modStr(val) {
+  return val >= 0 ? `+${val}` : `${val}`;
+}
+
+function profBonus(level) {
+  if (level <= 4) return 2;
+  if (level <= 8) return 3;
+  if (level <= 12) return 4;
+  if (level <= 16) return 5;
+  return 6;
+}
+
+function freshSheet() {
+  return {
+    name: '',
+    class: '',
+    level: 1,
+    stats: { for: 10, des: 10, con: 10, int: 10, sab: 10, car: 10 },
+    weapons: [],   // { name, damage, properties }
+    skills: [],    // nomes de pericias com proficiencia
+    features: [],  // habilidades especiais (ex: "Ataque Furtivo 2d6")
+  };
+}
+
+function pcSheetsBlock(game) {
+  if (!game.pcSheets || Object.keys(game.pcSheets).length === 0) return '';
+  const lines = [];
+  for (const [pid, sh] of Object.entries(game.pcSheets)) {
+    if (!sh.name) continue;
+    const prof = profBonus(sh.level);
+    const mods = Object.entries(sh.stats)
+      .map(([k, v]) => `${STAT_SHORT[k]}=${v}(${modStr(abilityMod(v))})`)
+      .join(' ');
+    let line = `<@${pid}> ${sh.name} — ${sh.class} nv${sh.level} | Prof ${modStr(prof)} | ${mods}`;
+    if (sh.weapons.length) {
+      const weps = sh.weapons.map(w => {
+        const stat = w.properties?.includes('finesse')
+          ? Math.max(abilityMod(sh.stats.for), abilityMod(sh.stats.des))
+          : abilityMod(sh.stats.for);
+        const atkBonus = stat + prof;
+        return `${w.name}(${modStr(atkBonus)} atk, ${w.damage}${modStr(stat)} dano${w.properties ? ', ' + w.properties : ''})`;
+      });
+      line += ` | Armas: ${weps.join('; ')}`;
+    }
+    if (sh.skills.length) {
+      const skillBonuses = sh.skills.map(s => {
+        // Tenta adivinhar o atributo da pericia
+        const skillAttr = guessSkillAttr(s);
+        const bonus = abilityMod(sh.stats[skillAttr]) + prof;
+        return `${s} ${modStr(bonus)}`;
+      });
+      line += ` | Pericias: ${skillBonuses.join(', ')}`;
+    }
+    if (sh.features.length) line += ` | Especial: ${sh.features.join(', ')}`;
+    lines.push(line);
+  }
+  if (lines.length === 0) return '';
+  return `\nFICHAS DOS PCs (CONSULTE SEMPRE ao pedir rolagens — cite o bonus exato e o dado):\n${lines.join('\n')}\n`;
+}
+
+function guessSkillAttr(skill) {
+  const map = {
+    atletismo: 'for',
+    acrobacia: 'des', furtividade: 'des', prestidigitacao: 'des',
+    'sleight of hand': 'des', stealth: 'des',
+    arcanismo: 'int', historia: 'int', investigacao: 'int', natureza: 'int', religiao: 'int',
+    adestramento: 'sab', intuicao: 'sab', medicina: 'sab', percepcao: 'sab', sobrevivencia: 'sab',
+    enganacao: 'car', intimidacao: 'car', atuacao: 'car', persuasao: 'car',
+    'trato com animais': 'sab', 'lidar com animais': 'sab',
+  };
+  return map[skill.toLowerCase()] || 'des';
 }
 
 // ---------------------------------------------------------------------------
@@ -966,6 +1055,7 @@ async function dmNarrate(game) {
   const canon = canonBlock();
   const secrets = pcSecretsBlock(game);
   const worldState = worldStateBlock(game);
+  const sheets = pcSheetsBlock(game);
 
   const system = `
 Voce e um Dungeon Master (DM) de D&D 5e em portugues brasileiro (pt-BR).
@@ -973,10 +1063,10 @@ Regras:
 - Nunca controle os personagens dos jogadores.
 - Seja CONCISO: 2-4 paragrafos curtos. Nao escreva textos longos.
 - Nao faca perguntas ao jogador. Nao liste opcoes. Apenas narre a cena e termine com "Proximo turno: <nome>".
-- Quando pedir rolagem, SEMPRE especifique o dado exato (d4, d6, d8, d10, d12, d20) e o modificador. Ex: "Role um d20+5 de Percepcao" ou "Role 2d6+3 de dano".
+- Quando pedir rolagem, CONSULTE A FICHA DO PC e cite o bonus EXATO. Ex: "Role 1d20+6 para ataque com Espada Curta (DES +3 + prof +3). Se acertar: 1d6+3 de dano."
 - NUNCA mude nomes de locais, NPCs ou objetos ja mencionados no historico.
 - No fim, diga APENAS: "Proximo turno: <@ID>". Nada mais depois disso.
-${canon}${secrets}${worldState}${scene}
+${canon}${secrets}${sheets}${worldState}${scene}
 ${NARRATIVE_GUARDRAILS}
 `.trim();
 
@@ -1013,6 +1103,7 @@ async function dmAsk(game, question) {
   const recentLog = game.log.slice(-15).join('\n');
   const canon = canonBlock();
   const worldState = worldStateBlock(game);
+  const sheets = pcSheetsBlock(game);
 
   const system = `
 Voce e um Dungeon Master de D&D 5e em portugues brasileiro (pt-BR).
@@ -1021,11 +1112,11 @@ O jogador esta fazendo uma PERGUNTA sobre o ambiente, a cena ou o que ele perceb
 REGRAS RIGIDAS:
 - Responda de forma DIRETA e CURTA: 1-3 frases no maximo.
 - Descreva apenas o que o personagem pode ver, ouvir, cheirar ou sentir.
-- Se a informacao exigir teste, diga qual teste e a CD.
+- Se a informacao exigir teste, CONSULTE A FICHA do PC e diga o dado exato com bonus. Ex: "Role 1d20+5 de Percepcao (SAB +2 + prof +3), CD 13."
 - NAO narre acoes do personagem. NAO avance a cena. NAO diga "Proximo turno".
 - NAO liste opcoes. NAO faca perguntas de volta.
 - NUNCA mude nomes ja estabelecidos no historico.
-${canon}${worldState}
+${canon}${sheets}${worldState}
 `.trim();
 
   const resp = await openai.responses.create({
@@ -1080,6 +1171,7 @@ async function dmResolveRoll(game, playerId, rollText) {
   const canon = canonBlock();
   const worldState = worldStateBlock(game);
   const secrets = pcSecretsBlock(game);
+  const sheets = pcSheetsBlock(game);
 
   const system = `
 Voce e um Dungeon Master de D&D 5e em portugues brasileiro (pt-BR).
@@ -1092,7 +1184,7 @@ REGRAS RIGIDAS:
 - NAO faca novas perguntas. NAO liste opcoes.
 - NUNCA mude nomes ja estabelecidos no historico.
 - Termine com "Proximo turno: <@ID>" indicando quem age em seguida.
-${canon}${secrets}${worldState}
+${canon}${secrets}${sheets}${worldState}
 ${NARRATIVE_GUARDRAILS}
 `.trim();
 
@@ -1304,9 +1396,10 @@ const HELP_MAIN = `**Comandos — Visao geral**
 - \`!ask <pergunta>\` — pergunta algo sobre o ambiente (resposta curta)
 - \`!context\` — resumo detalhado da situacao atual
 - \`!roll <resultado>\` — informa resultado de uma rolagem pedida pelo DM
-- \`!pc secret <texto>\` — registra motivacao/medo/segredo do seu PC
-- \`!pc list\` — mostra segredos registrados
-- \`!pc sheet\` — mostra sua ficha resumida
+- \`!pc nome/classe/atributos\` — registra sua ficha mecanica
+- \`!pc arma/pericia/especial\` — adiciona armas, pericias, habilidades
+- \`!pc secret <texto>\` — registra segredo do PC
+- \`!pc sheet\` — mostra ficha completa com bonus calculados
 - \`!inv\` — inventario do grupo (add/rm/gold/list)
 - \`!recap\` — resumo dramatico "Previously on..."
 - \`!pinhelp\` — reposta a mensagem de onboarding`;
@@ -1346,7 +1439,7 @@ const HELP_STORY = `**Comandos de Narrativa / Mesa**
 - \`!ask <pergunta>\` — pergunta ao DM sobre o ambiente (resposta curta e direta)
 - \`!context\` — pede um resumo detalhado da situacao atual
 - \`!roll <resultado>\` — informa resultado de rolagem pedida pelo DM
-- \`!pc sheet\` — mostra sua ficha resumida
+- \`!pc sheet\` — mostra ficha completa com bonus calculados
 - \`!inv\` — inventario do grupo (\`add/rm/gold/list\`)
 - \`!quest\` — diario de quests (\`add/done/rm/list\`) (DM)
 - \`!portrait <npc>\` — gera retrato de NPC via IA (DM)
@@ -2255,24 +2348,157 @@ ${tensionSection}
     // -----------------------------------------------------------------------
     if (cmd === '!pc') {
       const sub = rest[0]?.toLowerCase();
+      if (!game.pcSheets) game.pcSheets = {};
+
+      // Helper: garante ficha existe
+      const ensureSheet = (pid) => {
+        if (!game.pcSheets[pid]) game.pcSheets[pid] = freshSheet();
+        return game.pcSheets[pid];
+      };
+
+      if (sub === 'nome') {
+        if (!game.players.includes(message.author.id)) { await message.reply('Voce nao esta na mesa.'); return; }
+        const nome = rest.slice(1).join(' ').trim();
+        if (!nome) { await message.reply('Use: `!pc nome <nome do personagem>`'); return; }
+        const sh = ensureSheet(message.author.id);
+        sh.name = nome;
+        await sendEmbed(message.channel, { color: COLORS.SUCCESS, description: `🎭 Nome registrado: **${nome}**` });
+        return;
+      }
+
+      if (sub === 'classe') {
+        if (!game.players.includes(message.author.id)) { await message.reply('Voce nao esta na mesa.'); return; }
+        const className = rest[1];
+        const lvl = parseInt(rest[2]);
+        if (!className || isNaN(lvl)) { await message.reply('Use: `!pc classe <classe> <nivel>`\nEx: `!pc classe Ladino 3`'); return; }
+        const sh = ensureSheet(message.author.id);
+        sh.class = className;
+        sh.level = lvl;
+        await sendEmbed(message.channel, { color: COLORS.SUCCESS, description: `⚔️ Classe: **${className} nv${lvl}** | Proficiencia: **${modStr(profBonus(lvl))}**` });
+        return;
+      }
+
+      if (sub === 'atributos') {
+        if (!game.players.includes(message.author.id)) { await message.reply('Voce nao esta na mesa.'); return; }
+        const vals = rest.slice(1).map(Number);
+        if (vals.length !== 6 || vals.some(isNaN)) {
+          await message.reply('Use: `!pc atributos <FOR> <DES> <CON> <INT> <SAB> <CAR>`\nEx: `!pc atributos 10 16 12 8 14 10`');
+          return;
+        }
+        const sh = ensureSheet(message.author.id);
+        const keys = ['for', 'des', 'con', 'int', 'sab', 'car'];
+        keys.forEach((k, i) => { sh.stats[k] = vals[i]; });
+        const display = keys.map((k, i) => `**${STAT_SHORT[k]}** ${vals[i]} (${modStr(abilityMod(vals[i]))})`).join(' | ');
+        await sendEmbed(message.channel, { color: COLORS.SUCCESS, description: `📊 Atributos:\n${display}` });
+        return;
+      }
+
+      if (sub === 'arma') {
+        if (!game.players.includes(message.author.id)) { await message.reply('Voce nao esta na mesa.'); return; }
+        const action = rest[1]?.toLowerCase();
+        if (action === 'add') {
+          // !pc arma add "Espada Curta" 1d6 finesse
+          const remaining = rest.slice(2).join(' ');
+          const match = remaining.match(/^"?([^"]+?)"?\s+((?:\d+)?d\d+)\s*(.*)?$/i);
+          if (!match) {
+            await message.reply('Use: `!pc arma add <nome> <dano> [propriedades]`\nEx: `!pc arma add Espada Curta 1d6 finesse` ou `!pc arma add Arco Longo 1d8 distancia`');
+            return;
+          }
+          const sh = ensureSheet(message.author.id);
+          const wep = { name: match[1].trim(), damage: match[2], properties: match[3]?.trim() || '' };
+          sh.weapons.push(wep);
+          // Calcula bonus de ataque
+          const isFinesse = wep.properties.includes('finesse');
+          const statMod = isFinesse
+            ? Math.max(abilityMod(sh.stats.for), abilityMod(sh.stats.des))
+            : abilityMod(sh.stats.for);
+          const atkBonus = statMod + profBonus(sh.level);
+          await sendEmbed(message.channel, {
+            color: COLORS.SUCCESS,
+            description: `🗡️ Arma adicionada: **${wep.name}** — Atk ${modStr(atkBonus)}, Dano ${wep.damage}${modStr(statMod)}${wep.properties ? ` (${wep.properties})` : ''}`,
+          });
+          return;
+        }
+        if (action === 'rm') {
+          const wepName = rest.slice(2).join(' ').trim();
+          if (!wepName) { await message.reply('Use: `!pc arma rm <nome>`'); return; }
+          const sh = ensureSheet(message.author.id);
+          const idx = sh.weapons.findIndex(w => w.name.toLowerCase() === wepName.toLowerCase());
+          if (idx < 0) { await message.reply(`Arma "${wepName}" nao encontrada.`); return; }
+          sh.weapons.splice(idx, 1);
+          await message.reply(`Arma removida: **${wepName}**`);
+          return;
+        }
+        await message.reply('Use: `!pc arma add <nome> <dano> [propriedades]` ou `!pc arma rm <nome>`');
+        return;
+      }
+
+      if (sub === 'pericia') {
+        if (!game.players.includes(message.author.id)) { await message.reply('Voce nao esta na mesa.'); return; }
+        const action = rest[1]?.toLowerCase();
+        if (action === 'add') {
+          const skillName = rest.slice(2).join(' ').trim();
+          if (!skillName) { await message.reply('Use: `!pc pericia add <nome>`\nEx: `!pc pericia add Furtividade`'); return; }
+          const sh = ensureSheet(message.author.id);
+          if (!sh.skills.includes(skillName)) sh.skills.push(skillName);
+          const attr = guessSkillAttr(skillName);
+          const bonus = abilityMod(sh.stats[attr]) + profBonus(sh.level);
+          await sendEmbed(message.channel, {
+            color: COLORS.SUCCESS,
+            description: `✅ Pericia: **${skillName}** ${modStr(bonus)} (${STAT_SHORT[attr]} + prof)`,
+          });
+          return;
+        }
+        if (action === 'rm') {
+          const skillName = rest.slice(2).join(' ').trim();
+          if (!skillName) { await message.reply('Use: `!pc pericia rm <nome>`'); return; }
+          const sh = ensureSheet(message.author.id);
+          const idx = sh.skills.findIndex(s => s.toLowerCase() === skillName.toLowerCase());
+          if (idx < 0) { await message.reply(`Pericia "${skillName}" nao encontrada.`); return; }
+          sh.skills.splice(idx, 1);
+          await message.reply(`Pericia removida: **${skillName}**`);
+          return;
+        }
+        await message.reply('Use: `!pc pericia add <nome>` ou `!pc pericia rm <nome>`');
+        return;
+      }
+
+      if (sub === 'especial') {
+        if (!game.players.includes(message.author.id)) { await message.reply('Voce nao esta na mesa.'); return; }
+        const action = rest[1]?.toLowerCase();
+        if (action === 'add') {
+          const feat = rest.slice(2).join(' ').trim();
+          if (!feat) { await message.reply('Use: `!pc especial add <habilidade>`\nEx: `!pc especial add Ataque Furtivo 2d6`'); return; }
+          const sh = ensureSheet(message.author.id);
+          sh.features.push(feat);
+          await sendEmbed(message.channel, { color: COLORS.SUCCESS, description: `⚡ Especial adicionado: **${feat}**` });
+          return;
+        }
+        if (action === 'rm') {
+          const feat = rest.slice(2).join(' ').trim();
+          if (!feat) { await message.reply('Use: `!pc especial rm <texto>`'); return; }
+          const sh = ensureSheet(message.author.id);
+          const idx = sh.features.findIndex(f => f.toLowerCase() === feat.toLowerCase());
+          if (idx < 0) { await message.reply(`"${feat}" nao encontrado.`); return; }
+          sh.features.splice(idx, 1);
+          await message.reply(`Especial removido: **${feat}**`);
+          return;
+        }
+        await message.reply('Use: `!pc especial add <texto>` ou `!pc especial rm <texto>`');
+        return;
+      }
 
       if (sub === 'secret') {
-        if (!game.players.includes(message.author.id)) {
-          await message.reply('Voce nao esta na mesa.');
-          return;
-        }
+        if (!game.players.includes(message.author.id)) { await message.reply('Voce nao esta na mesa.'); return; }
         const secretText = rest.slice(1).join(' ');
         if (!secretText) {
-          await message.reply(
-            'Use: `!pc secret <o que quer | o que teme | o que esconde>`\nExemplo: `!pc secret Quer vingar o irmao. Teme fogo. Esconde que e um desertor.`',
-          );
+          await message.reply('Use: `!pc secret <o que quer | o que teme | o que esconde>`');
           return;
         }
-
         if (!game.pcSecrets) game.pcSecrets = {};
         game.pcSecrets[message.author.id] = secretText;
         game.log.push(`PC SECRET <@${message.author.id}>: (registrado)`);
-        await message.reply('Segredo registrado! O DM vai considerar isso nas narracoes.');
+        await message.reply('Segredo registrado!');
         return;
       }
 
@@ -2289,46 +2515,79 @@ ${tensionSection}
       }
 
       if (sub === 'sheet') {
-        if (!game.players.includes(message.author.id)) {
-          await message.reply('Voce nao esta na mesa.');
-          return;
-        }
+        if (!game.players.includes(message.author.id)) { await message.reply('Voce nao esta na mesa.'); return; }
+        const sh = game.pcSheets?.[message.author.id];
         const displayName = message.member?.displayName || message.author.username;
-        const secret = game.pcSecrets?.[message.author.id] || '_Nenhum segredo registrado._';
         const cs = game.consequences;
-
         const fields = [];
-        fields.push({ name: '🎭 Jogador', value: `<@${message.author.id}> (${displayName})`, inline: true });
-        fields.push({ name: '📍 Dia', value: `${cs.day}`, inline: true });
-        fields.push({ name: '🔮 Segredos', value: secret, inline: false });
 
-        // Quests ativas
+        if (sh?.name) {
+          const prof = profBonus(sh.level);
+          fields.push({ name: '🎭 Personagem', value: `**${sh.name}** — ${sh.class} nv${sh.level}`, inline: true });
+          fields.push({ name: '🎯 Proficiencia', value: modStr(prof), inline: true });
+          fields.push({ name: '\u200b', value: '\u200b', inline: true }); // spacer
+
+          // Atributos
+          const statLines = Object.entries(sh.stats).map(([k, v]) =>
+            `**${STAT_SHORT[k]}** ${v} (${modStr(abilityMod(v))})`
+          );
+          fields.push({ name: '📊 Atributos', value: statLines.join(' | '), inline: false });
+
+          // Armas com bonus calculado
+          if (sh.weapons.length) {
+            const wepLines = sh.weapons.map(w => {
+              const isFinesse = w.properties?.includes('finesse');
+              const statMod = isFinesse
+                ? Math.max(abilityMod(sh.stats.for), abilityMod(sh.stats.des))
+                : abilityMod(sh.stats.for);
+              const atkBonus = statMod + prof;
+              return `🗡️ **${w.name}** — Atk ${modStr(atkBonus)}, Dano ${w.damage}${modStr(statMod)}${w.properties ? ` (${w.properties})` : ''}`;
+            });
+            fields.push({ name: '⚔️ Armas', value: wepLines.join('\n'), inline: false });
+          }
+
+          // Pericias com bonus
+          if (sh.skills.length) {
+            const skillLines = sh.skills.map(s => {
+              const attr = guessSkillAttr(s);
+              const bonus = abilityMod(sh.stats[attr]) + prof;
+              return `${s} **${modStr(bonus)}** (${STAT_SHORT[attr]})`;
+            });
+            fields.push({ name: '🎓 Pericias', value: skillLines.join(', '), inline: false });
+          }
+
+          // Features
+          if (sh.features.length) {
+            fields.push({ name: '⚡ Especiais', value: sh.features.join(', '), inline: false });
+          }
+        } else {
+          fields.push({ name: '🎭 Jogador', value: `<@${message.author.id}> (${displayName})`, inline: true });
+          fields.push({ name: '⚠️', value: 'Ficha nao registrada. Use `!pc nome`, `!pc classe`, `!pc atributos`, etc.', inline: false });
+        }
+
+        // Segredo
+        const secret = game.pcSecrets?.[message.author.id];
+        if (secret) fields.push({ name: '🔮 Segredos', value: secret, inline: false });
+
+        // Quests
         if (game.quests?.length) {
           const active = game.quests.filter(q => q.status === 'active');
-          if (active.length) {
-            fields.push({ name: '📋 Quests Ativas', value: active.map(q => `- ${q.name}`).join('\n'), inline: false });
-          }
+          if (active.length) fields.push({ name: '📋 Quests', value: active.map(q => `- ${q.name}`).join('\n'), inline: false });
         }
 
-        // Inventario resumido
+        // Inventario
         if (game.inventory && (game.inventory.items.length || game.inventory.gold > 0)) {
           let inv = `💰 ${game.inventory.gold} ouro`;
-          if (game.inventory.items.length) {
-            inv += ' | ' + game.inventory.items.map(i => `${i.name}${i.qty > 1 ? ` x${i.qty}` : ''}`).join(', ');
-          }
-          fields.push({ name: '🎒 Inventário', value: inv, inline: false });
+          if (game.inventory.items.length) inv += ' | ' + game.inventory.items.map(i => `${i.name}${i.qty > 1 ? ` x${i.qty}` : ''}`).join(', ');
+          fields.push({ name: '🎒 Inventario', value: inv, inline: false });
         }
 
-        await sendEmbed(message.channel, {
-          color: COLORS.HELP,
-          title: `📜 Ficha — ${displayName}`,
-          fields,
-          footer: timeFooter(cs),
-        });
+        const title = sh?.name ? `📜 Ficha — ${sh.name}` : `📜 Ficha — ${displayName}`;
+        await sendEmbed(message.channel, { color: COLORS.HELP, title, fields, footer: timeFooter(cs) });
         return;
       }
 
-      await message.reply('Use: `!pc secret <texto>`, `!pc list` ou `!pc sheet`.');
+      await message.reply('Use: `!pc nome/classe/atributos/arma/pericia/especial/secret/sheet`\nEx:\n`!pc nome Kael`\n`!pc classe Ladino 3`\n`!pc atributos 10 16 12 8 14 10`\n`!pc arma add Espada Curta 1d6 finesse`\n`!pc pericia add Furtividade`\n`!pc especial add Ataque Furtivo 2d6`');
       return;
     }
 

@@ -56,9 +56,14 @@ node index.js
 | `!ask <pergunta>` | Pergunta algo sobre o ambiente (resposta curta e direta) |
 | `!context` | Resumo detalhado da situacao atual |
 | `!roll <resultado>` | Informa resultado de rolagem pedida pelo DM |
-| `!pc secret <texto>` | Registra motivacao/medo/segredo do seu PC |
-| `!pc list` | Mostra segredos registrados |
-| `!pc sheet` | Mostra ficha resumida do PC |
+| `!pc nome <nome>` | Registra nome do personagem |
+| `!pc classe <classe> <nivel>` | Registra classe e nivel |
+| `!pc atributos <FOR DES CON INT SAB CAR>` | Registra atributos (6 numeros) |
+| `!pc arma add <nome> <dano> [props]` | Adiciona arma (ex: `Espada Curta 1d6 finesse`) |
+| `!pc pericia add <nome>` | Adiciona pericia com proficiencia |
+| `!pc especial add <texto>` | Adiciona habilidade especial |
+| `!pc secret <texto>` | Registra segredo do PC |
+| `!pc sheet` | Mostra ficha completa com bonus calculados |
 | `!inv` | Mostra inventario do grupo |
 | `!inv add <item> [xN]` | Adiciona item ao inventario |
 | `!inv rm <item> [xN]` | Remove item do inventario |
@@ -145,6 +150,52 @@ O clima muda automaticamente com `!advance day`:
 ### Retratos de NPC
 Quando um NPC do canon aparece em uma narracao, o bot gera automaticamente um retrato via DALL-E em background. A imagem aparece no chat quando ficar pronta, sem travar o jogo.
 - Use `!portrait <nome>` para gerar/re-exibir manualmente
+
+---
+
+## Ficha de Personagem
+
+Registre a ficha do seu PC para que o DM IA saiba exatamente quais bonus usar ao pedir rolagens. **Sem ficha, o DM nao consegue dizer "Role 1d20+6" — ele vai dar respostas genericas.**
+
+### Setup rapido
+```
+!pc nome Kael
+!pc classe Ladino 3
+!pc atributos 10 16 12 8 14 10
+!pc arma add Espada Curta 1d6 finesse
+!pc arma add Adaga 1d4 finesse arremesso
+!pc pericia add Furtividade
+!pc pericia add Acrobacia
+!pc pericia add Percepcao
+!pc especial add Ataque Furtivo 2d6
+```
+
+### O que acontece
+Depois de registrar, o DM IA consulta sua ficha e diz exatamente:
+- "Role **1d20+6** para ataque com Espada Curta (DES +3 + prof +3). Se acertar: **1d6+3** de dano + **2d6** de Ataque Furtivo."
+- "Role **1d20+5** de Percepcao (SAB +2 + prof +3), CD 14."
+
+### Comandos
+```
+!pc nome <nome>                    → nome do personagem
+!pc classe <classe> <nivel>        → classe e nivel (calcula proficiencia)
+!pc atributos <F D C I S K>        → 6 valores (calcula modificadores)
+!pc arma add <nome> <dano> [props] → arma (calcula bonus de ataque e dano)
+!pc arma rm <nome>                 → remove arma
+!pc pericia add <nome>             → pericia com proficiencia (calcula bonus)
+!pc pericia rm <nome>              → remove pericia
+!pc especial add <texto>           → habilidade especial (Ataque Furtivo, etc.)
+!pc especial rm <texto>            → remove especial
+!pc sheet                          → mostra ficha completa com tudo calculado
+```
+
+### Atributos
+A ordem e: **FOR DES CON INT SAB CAR** (6 numeros separados por espaco).
+O bot calcula os modificadores automaticamente: `16 → +3`, `10 → +0`, `8 → -1`.
+
+### Propriedades de arma
+- `finesse` — usa o maior entre FOR e DES
+- Qualquer outra propriedade e informativa (ex: `distancia`, `arremesso`, `leve`)
 
 ---
 
