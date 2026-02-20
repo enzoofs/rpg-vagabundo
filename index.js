@@ -3005,8 +3005,42 @@ FORMATO OBRIGATORIO:
   }
 });
 
-client.once('ready', () => {
+client.once('ready', async () => {
   console.log(`Logado como ${client.user.tag}`);
+  try {
+    const ch = await client.channels.fetch(GAME_CHANNEL_ID);
+    if (ch) {
+      await sendEmbed(ch, {
+        color: COLORS.SUCCESS,
+        title: '🟢 Servidor Online',
+        description: 'O DM acordou. A mesa esta pronta.\nUse `!help` para ver os comandos.',
+      });
+    }
+  } catch { /* canal nao encontrado — ignora */ }
 });
+
+// ---------------------------------------------------------------------------
+// Aviso de desligamento antes de sair
+// ---------------------------------------------------------------------------
+async function shutdownNotice() {
+  try {
+    const ch = await client.channels.fetch(GAME_CHANNEL_ID);
+    if (ch) {
+      await sendEmbed(ch, {
+        color: COLORS.COMBAT,
+        title: '🔴 Servidor Offline',
+        description: 'O DM adormeceu. O jogo esta pausado.\nTodo o progresso foi salvo automaticamente.',
+      });
+    }
+  } catch { /* ignora se nao conseguir enviar */ }
+  // Salva todos os jogos antes de sair
+  for (const [channelId, game] of games) {
+    saveGame(channelId, game);
+  }
+  process.exit(0);
+}
+
+process.on('SIGINT', shutdownNotice);
+process.on('SIGTERM', shutdownNotice);
 
 client.login(process.env.DISCORD_TOKEN);
