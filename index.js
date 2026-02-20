@@ -756,9 +756,14 @@ function freshSheet() {
     class: '',
     level: 1,
     stats: { for: 10, des: 10, con: 10, int: 10, sab: 10, car: 10 },
-    weapons: [],   // { name, damage, properties }
-    skills: [],    // nomes de pericias com proficiencia
-    features: [],  // habilidades especiais (ex: "Ataque Furtivo 2d6")
+    weapons: [],          // { name, damage, properties }
+    skills: [],           // nomes de pericias com proficiencia
+    features: [],         // habilidades especiais (ex: "Ataque Furtivo 2d6")
+    ac: null,             // classe de armadura
+    hp: null,             // HP atual
+    maxHp: null,          // HP maximo
+    saveProficiencies: [], // ['des', 'int'] — saves com proficiencia
+    expertise: [],        // ['Furtividade'] — pericias com expertise (2x prof)
   };
 }
 
@@ -771,7 +776,18 @@ function pcSheetsBlock(game) {
     const mods = Object.entries(sh.stats)
       .map(([k, v]) => `${STAT_SHORT[k]}=${v}(${modStr(abilityMod(v))})`)
       .join(' ');
-    let line = `<@${pid}> ${sh.name} — ${sh.class} nv${sh.level} | Prof ${modStr(prof)} | ${mods}`;
+    let line = `<@${pid}> ${sh.name} — ${sh.class} nv${sh.level} | Prof ${modStr(prof)}`;
+    if (sh.ac) line += ` | AC ${sh.ac}`;
+    if (sh.maxHp) line += ` | HP ${sh.hp ?? sh.maxHp}/${sh.maxHp}`;
+    line += ` | ${mods}`;
+    // Saves com proficiencia
+    if (sh.saveProficiencies?.length) {
+      const saveList = sh.saveProficiencies.map(k => {
+        const bonus = abilityMod(sh.stats[k]) + prof;
+        return `${STAT_SHORT[k]} ${modStr(bonus)}`;
+      });
+      line += ` | Saves: ${saveList.join(', ')}`;
+    }
     if (sh.weapons.length) {
       const weps = sh.weapons.map(w => {
         const stat = w.properties?.includes('finesse')
@@ -783,11 +799,12 @@ function pcSheetsBlock(game) {
       line += ` | Armas: ${weps.join('; ')}`;
     }
     if (sh.skills.length) {
+      const expertiseSet = new Set((sh.expertise || []).map(s => s.toLowerCase()));
       const skillBonuses = sh.skills.map(s => {
-        // Tenta adivinhar o atributo da pericia
         const skillAttr = guessSkillAttr(s);
-        const bonus = abilityMod(sh.stats[skillAttr]) + prof;
-        return `${s} ${modStr(bonus)}`;
+        const isExpertise = expertiseSet.has(s.toLowerCase());
+        const bonus = abilityMod(sh.stats[skillAttr]) + prof * (isExpertise ? 2 : 1);
+        return `${s} ${modStr(bonus)}${isExpertise ? ' (expertise)' : ''}`;
       });
       line += ` | Pericias: ${skillBonuses.join(', ')}`;
     }
@@ -809,6 +826,136 @@ function guessSkillAttr(skill) {
     'trato com animais': 'sab', 'lidar com animais': 'sab',
   };
   return map[skill.toLowerCase()] || 'des';
+}
+
+// ---------------------------------------------------------------------------
+// Parser de ficha D&D Beyond — importa texto colado e preenche a ficha
+// ---------------------------------------------------------------------------
+const CLASS_TRANSLATE = {
+  barbarian: 'Barbaro', bard: 'Bardo', cleric: 'Clerigo', druid: 'Druida',
+  fighter: 'Guerreiro', monk: 'Monge', paladin: 'Paladino', ranger: 'Patrulheiro',
+  rogue: 'Ladino', sorcerer: 'Feiticeiro', warlock: 'Bruxo', wizard: 'Mago',
+  artificer: 'Artificer', 'blood hunter': 'Cacador de Sangue',
+};
+
+const SKILL_TRANSLATE = {
+  acrobatics: 'Acrobacia', 'animal handling': 'Trato com Animais',
+  arcana: 'Arcanismo', athletics: 'Atletismo', deception: 'Enganacao',
+  history: 'Historia', insight: 'Intuicao', intimidation: 'Intimidacao',
+  investigation: 'Investigacao', medicine: 'Medicina', nature: 'Natureza',
+  perception: 'Percepcao', performance: 'Atuacao', persuasion: 'Persuasao',
+  religion: 'Religiao', 'sleight of hand': 'Prestidigitacao',
+  stealth: 'Furtividade', survival: 'Sobrevivencia',
+};
+
+const WEAPON_TRANSLATE = {
+  dagger: 'Adaga', shortbow: 'Arco Curto', longbow: 'Arco Longo',
+  shortsword: 'Espada Curta', longsword: 'Espada Longa', greatsword: 'Montante',
+  greataxe: 'Machado Grande', handaxe: 'Machadinha', battleaxe: 'Machado de Batalha',
+  rapier: 'Rapieira', scimitar: 'Cimitarra', warhammer: 'Martelo de Guerra',
+  mace: 'Maca', quarterstaff: 'Bordao', spear: 'Lanca', javelin: 'Dardo',
+  'light crossbow': 'Besta Leve', 'heavy crossbow': 'Besta Pesada',
+  'hand crossbow': 'Besta de Mao', sling: 'Funda', trident: 'Tridente',
+  whip: 'Chicote', flail: 'Mangual', glaive: 'Glaive', halberd: 'Alabarda',
+  pike: 'Pique', 'war pick': 'Picareta de Guerra', morningstar: 'Estrela d\'Alva',
+  club: 'Clava', 'unarmed strike': 'Desarmado',
+};
+
+const STAT_FROM_EN = { str: 'for', dex: 'des', con: 'con', int: 'int', wis: 'sab', cha: 'car' };
+const SAVE_FROM_EN = {
+  strength: 'for', dexterity: 'des', constitution: 'con',
+  intelligence: 'int', wisdom: 'sab', charisma: 'car',
+};
+
+function parseDnDBeyondSheet(rawText) {
+  const lines = rawText.split('\n').map(l => l.trim()).filter(l => l);
+  const sheet = freshSheet();
+  const extra = { ac: null, hp: null, maxHp: null, saveProficiencies: [], expertise: [] };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const low = line.toLowerCase();
+
+    // Primeira linha: Race Class Level (ex: "Halfling Rogue 1")
+    if (i === 0) {
+      const firstMatch = line.match(/^(.+?)\s+(\w[\w\s]*?)\s+(\d+)$/);
+      if (firstMatch) {
+        sheet.name = firstMatch[1].trim();
+        const rawClass = firstMatch[2].trim().toLowerCase();
+        sheet.class = CLASS_TRANSLATE[rawClass] || firstMatch[2].trim();
+        sheet.level = parseInt(firstMatch[3]) || 1;
+      }
+      continue;
+    }
+
+    // AC
+    const acMatch = line.match(/^AC:\s*(\d+)/i);
+    if (acMatch) { extra.ac = parseInt(acMatch[1]); continue; }
+
+    // HP
+    const hpMatch = line.match(/^HP:\s*(\d+)\s*\/\s*(\d+)/i);
+    if (hpMatch) { extra.hp = parseInt(hpMatch[1]); extra.maxHp = parseInt(hpMatch[2]); continue; }
+
+    // Stats: STR: 8 (-1) DEX: 15 (+2) ...
+    // Linha de atributos (pode ser 1 ou 2 linhas: "STR: 8 DEX: 15 CON: 12" e "INT: 13 WIS: 10 CHA: 14")
+    if (/(str|dex|con|int|wis|cha):\s*\d+/i.test(line)) {
+      const statPat = /(str|dex|con|int|wis|cha):\s*(\d+)/gi;
+      let m;
+      while ((m = statPat.exec(line)) !== null) {
+        const key = STAT_FROM_EN[m[1].toLowerCase()];
+        if (key) sheet.stats[key] = parseInt(m[2]);
+      }
+      continue;
+    }
+
+    // Save Proficiencies
+    if (low.startsWith('save proficiencies:') || low.startsWith('saving throw proficiencies:')) {
+      const savePart = line.replace(/^[^:]+:\s*/, '');
+      const saves = savePart.split(',').map(s => s.trim());
+      for (const s of saves) {
+        const saveName = s.replace(/\s*[+-]?\d+.*$/, '').trim().toLowerCase();
+        const key = SAVE_FROM_EN[saveName];
+        if (key) extra.saveProficiencies.push(key);
+      }
+      continue;
+    }
+
+    // Skill Proficiencies
+    if (low.startsWith('skill proficiencies:')) {
+      const skillPart = line.replace(/^[^:]+:\s*/, '');
+      const entries = skillPart.split(',').map(s => s.trim());
+      for (const entry of entries) {
+        const isExpertise = /expertise/i.test(entry);
+        const skillName = entry.replace(/\s*[+-]?\d+.*$/, '').replace(/\(.*\)/, '').trim().toLowerCase();
+        const translated = SKILL_TRANSLATE[skillName] || entry.replace(/\s*[+-]?\d+.*$/, '').replace(/\(.*\)/, '').trim();
+        sheet.skills.push(translated);
+        if (isExpertise) extra.expertise.push(translated);
+      }
+      continue;
+    }
+
+    // Attacks (linhas tipo "Dagger: Attack: +4 to hit. Hit: 1d4+2 [piercing] damage.")
+    const atkMatch = line.match(/^(.+?):\s*Attack:\s*([+-]?\d+)\s*to hit\.\s*Hit:\s*(\S+)\s*\[(\w+)]\s*damage/i);
+    if (atkMatch) {
+      const rawName = atkMatch[1].trim().toLowerCase();
+      const translatedName = WEAPON_TRANSLATE[rawName] || atkMatch[1].trim();
+      const dmg = atkMatch[3]; // "1d4+2" or "0"
+      if (dmg === '0') continue; // skip unarmed 0 damage
+      // Detecta propriedades baseado no tipo de arma
+      const props = [];
+      if (['adaga', 'espada curta', 'rapieira', 'cimitarra', 'dagger', 'shortsword', 'rapier', 'scimitar'].includes(rawName) ||
+          ['adaga', 'espada curta', 'rapieira', 'cimitarra'].includes(translatedName.toLowerCase())) {
+        props.push('finesse');
+      }
+      sheet.weapons.push({ name: translatedName, damage: dmg.replace(/[+-]\d+$/, ''), properties: props.join(' ') || undefined });
+      continue;
+    }
+
+    // Proficiency Bonus (ignoramos pois calculamos do nivel)
+    // Initiative, Senses — ignoramos por enquanto
+  }
+
+  return { sheet, extra };
 }
 
 // ---------------------------------------------------------------------------
@@ -2553,8 +2700,53 @@ ${tensionSection}
     // !pc secret <texto>
     // -----------------------------------------------------------------------
     if (cmd === '!pc') {
-      const sub = rest[0]?.toLowerCase();
       if (!game.pcSheets) game.pcSheets = {};
+
+      // ---- IMPORT D&D BEYOND ----
+      // Detecta formato colado do D&D Beyond (tem STR/DEX e "to hit")
+      const rawPcText = message.content.slice(3).trim(); // remove "!pc"
+      if (rawPcText.match(/\bSTR:\s*\d+/i) && rawPcText.match(/\bDEX:\s*\d+/i)) {
+        const { sheet, extra } = parseDnDBeyondSheet(rawPcText);
+        const sh = freshSheet();
+        // Mescla dados parseados
+        if (sheet.name) sh.name = sheet.name;
+        if (sheet.class) sh.class = sheet.class;
+        sh.level = sheet.level;
+        sh.stats = sheet.stats;
+        sh.weapons = sheet.weapons;
+        sh.skills = sheet.skills;
+        sh.features = sheet.features;
+        sh.ac = extra.ac;
+        sh.hp = extra.hp;
+        sh.maxHp = extra.maxHp;
+        sh.saveProficiencies = extra.saveProficiencies;
+        sh.expertise = extra.expertise;
+        game.pcSheets[message.author.id] = sh;
+
+        const prof = profBonus(sh.level);
+        const statLine = Object.entries(sh.stats)
+          .map(([k, v]) => `**${STAT_SHORT[k]}** ${v} (${modStr(abilityMod(v))})`)
+          .join(' | ');
+
+        let desc = `**${sh.name || '(sem nome)'}** — ${sh.class} nv${sh.level} | Prof ${modStr(prof)}`;
+        if (sh.ac) desc += ` | AC ${sh.ac}`;
+        if (sh.maxHp) desc += ` | HP ${sh.hp}/${sh.maxHp}`;
+        desc += `\n${statLine}`;
+        if (sh.weapons.length) desc += `\n⚔️ ${sh.weapons.map(w => w.name).join(', ')}`;
+        if (sh.skills.length) desc += `\n🎓 ${sh.skills.join(', ')}`;
+        if (sh.expertise.length) desc += `\n⭐ Expertise: ${sh.expertise.join(', ')}`;
+        if (sh.saveProficiencies.length) desc += `\n🛡️ Saves: ${sh.saveProficiencies.map(k => STAT_SHORT[k]).join(', ')}`;
+
+        await sendEmbed(message.channel, {
+          color: COLORS.SUCCESS,
+          title: '📜 Ficha Importada!',
+          description: desc,
+          footer: 'Use !pc nome <nome> para definir o nome do personagem | !pc sheet para ver a ficha',
+        });
+        return;
+      }
+
+      const sub = rest[0]?.toLowerCase();
 
       // Helper: garante ficha existe
       const ensureSheet = (pid) => {
@@ -2731,13 +2923,24 @@ ${tensionSection}
           const prof = profBonus(sh.level);
           fields.push({ name: '🎭 Personagem', value: `**${sh.name}** — ${sh.class} nv${sh.level}`, inline: true });
           fields.push({ name: '🎯 Proficiencia', value: modStr(prof), inline: true });
-          fields.push({ name: '\u200b', value: '\u200b', inline: true }); // spacer
+          // AC e HP
+          const combatInfo = [sh.ac ? `AC ${sh.ac}` : null, sh.maxHp ? `HP ${sh.hp ?? sh.maxHp}/${sh.maxHp}` : null].filter(Boolean).join(' | ');
+          fields.push({ name: '🛡️ Combate', value: combatInfo || '—', inline: true });
 
           // Atributos
           const statLines = Object.entries(sh.stats).map(([k, v]) =>
             `**${STAT_SHORT[k]}** ${v} (${modStr(abilityMod(v))})`
           );
           fields.push({ name: '📊 Atributos', value: statLines.join(' | '), inline: false });
+
+          // Saves com proficiencia
+          if (sh.saveProficiencies?.length) {
+            const saveLines = sh.saveProficiencies.map(k => {
+              const bonus = abilityMod(sh.stats[k]) + prof;
+              return `**${STAT_SHORT[k]}** ${modStr(bonus)}`;
+            });
+            fields.push({ name: '🛡️ Saves', value: saveLines.join(' | '), inline: false });
+          }
 
           // Armas com bonus calculado
           if (sh.weapons.length) {
@@ -2752,12 +2955,14 @@ ${tensionSection}
             fields.push({ name: '⚔️ Armas', value: wepLines.join('\n'), inline: false });
           }
 
-          // Pericias com bonus
+          // Pericias com bonus (expertise marcada)
           if (sh.skills.length) {
+            const expertiseSet = new Set((sh.expertise || []).map(s => s.toLowerCase()));
             const skillLines = sh.skills.map(s => {
               const attr = guessSkillAttr(s);
-              const bonus = abilityMod(sh.stats[attr]) + prof;
-              return `${s} **${modStr(bonus)}** (${STAT_SHORT[attr]})`;
+              const isExpertise = expertiseSet.has(s.toLowerCase());
+              const bonus = abilityMod(sh.stats[attr]) + prof * (isExpertise ? 2 : 1);
+              return `${s} **${modStr(bonus)}** (${STAT_SHORT[attr]})${isExpertise ? ' ⭐' : ''}`;
             });
             fields.push({ name: '🎓 Pericias', value: skillLines.join(', '), inline: false });
           }
@@ -2768,7 +2973,7 @@ ${tensionSection}
           }
         } else {
           fields.push({ name: '🎭 Jogador', value: `<@${message.author.id}> (${displayName})`, inline: true });
-          fields.push({ name: '⚠️', value: 'Ficha nao registrada. Use `!pc nome`, `!pc classe`, `!pc atributos`, etc.', inline: false });
+          fields.push({ name: '⚠️', value: 'Ficha nao registrada. Cole o texto do D&D Beyond com `!pc` ou use os comandos manuais.', inline: false });
         }
 
         // Segredo
