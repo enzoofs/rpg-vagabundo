@@ -402,6 +402,38 @@ function hpBar(current, max) {
 }
 
 // ---------------------------------------------------------------------------
+// Rolador de dados — parser de expressoes tipo "1d20+6", "2d6+3", "1d20-1"
+// ---------------------------------------------------------------------------
+const DICE_REGEX = /(\d+)?d(\d+)([+-]\d+)?/i;
+
+function rollDiceExpr(expr) {
+  const m = expr.match(DICE_REGEX);
+  if (!m) return null;
+  const count = parseInt(m[1]) || 1;
+  const sides = parseInt(m[2]);
+  const mod = parseInt(m[3]) || 0;
+  if (sides < 1 || count < 1 || count > 100) return null;
+
+  const rolls = [];
+  for (let i = 0; i < count; i++) {
+    rolls.push(Math.floor(Math.random() * sides) + 1);
+  }
+  const subtotal = rolls.reduce((a, b) => a + b, 0);
+  const total = subtotal + mod;
+
+  return {
+    rolls,         // [14]  ou  [3, 5]
+    subtotal,      // soma dos dados sem modificador
+    mod,           // +6, -1, 0
+    total,         // resultado final
+    sides,         // 20, 6, etc.
+    count,         // quantos dados
+    natural: count === 1 ? rolls[0] : null, // valor natural (so para 1 dado)
+    expr: `${count}d${sides}${mod >= 0 ? (mod ? '+' + mod : '') : mod}`,
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Estado em memoria por canal
 // ---------------------------------------------------------------------------
 const games = new Map();
@@ -1448,9 +1480,10 @@ Use \`!act <sua acao>\` no seu turno. Seja descritivo!
 - Diga O QUE faz, COMO faz, e QUAL o objetivo.
 - Se precisar de rolagem, o DM vai pedir.
 
-**Rolando dados com Avrae**
-Use o Avrae no canal de dados e cole o resultado na sua acao.
-Ex: \`!r 1d20+5\` no Avrae, depois \`!act Ataco o goblin com minha espada (resultado: 18)\`
+**Rolando dados**
+Quando o DM pedir uma rolagem, use \`!roll\` com a expressao de dados:
+Ex: DM pede "Role 1d20+6" → voce digita \`!roll 1d20+6\`
+O bot rola automaticamente, mostra a animacao e o DM resolve.
 
 **Exemplos prontos**
 
@@ -1458,7 +1491,7 @@ Ex: \`!r 1d20+5\` no Avrae, depois \`!act Ataco o goblin com minha espada (resul
 
 \`!act Me aproximo do taberneiro e pergunto sobre os desaparecimentos. "Ouvi dizer que gente anda sumindo..."\`
 
-\`!act Avanco ate o goblin mais proximo e ataco com minha espada longa. (Avrae: 1d20+5 = 17, dano 1d8+3 = 7)\`
+\`!act Avanco ate o goblin mais proximo e ataco com minha espada longa.\`
 
 **Ajuda**
 \`!help\` — geral | \`!help combat\` — combate | \`!help story\` — narrativa | \`!help npc\` — NPCs | \`!help pack\` — campanha`;
@@ -1480,7 +1513,7 @@ const HELP_MAIN = `**Comandos — Visao geral**
 - \`!turn\` — mostra turno e ordem atual
 - \`!ask <pergunta>\` — pergunta algo sobre o ambiente (resposta curta)
 - \`!context\` — resumo detalhado da situacao atual
-- \`!roll <resultado>\` — informa resultado de uma rolagem pedida pelo DM
+- \`!roll <dados>\` — rola dados (\`!roll 1d20+6\`) ou informa resultado (\`!roll 18\`)
 - \`!pc nome/classe/atributos\` — registra sua ficha mecanica
 - \`!pc arma/pericia/especial\` — adiciona armas, pericias, habilidades
 - \`!pc secret <texto>\` — registra segredo do PC
@@ -1523,7 +1556,7 @@ const HELP_STORY = `**Comandos de Narrativa / Mesa**
 - \`!scene <tema/tom/regras>\` — define vibe da campanha
 - \`!ask <pergunta>\` — pergunta ao DM sobre o ambiente (resposta curta e direta)
 - \`!context\` — pede um resumo detalhado da situacao atual
-- \`!roll <resultado>\` — informa resultado de rolagem pedida pelo DM
+- \`!roll <dados>\` — rola dados (\`!roll 1d20+6\`) ou informa resultado (\`!roll 18\`)
 - \`!pc sheet\` — mostra ficha completa com bonus calculados
 - \`!inv\` — inventario do grupo (\`add/rm/gold/list\`)
 - \`!quest\` — diario de quests (\`add/done/rm/list\`) (DM)
@@ -1916,11 +1949,11 @@ ${tensionSection}
     }
 
     // -----------------------------------------------------------------------
-    // !roll — informa resultado de rolagem pedida pelo DM
+    // !roll — rola dados (1d20+6) ou informa resultado (18)
     // -----------------------------------------------------------------------
     if (cmd === '!roll') {
       if (!args) {
-        await message.reply('Use: `!roll <resultado>` (ex: `!roll Percepcao 18` ou `!roll 14`)');
+        await message.reply('Use: `!roll 1d20+6` (rola os dados) ou `!roll 18` (informa resultado)');
         return;
       }
       if (!game.players.includes(message.author.id)) {
@@ -1932,17 +1965,38 @@ ${tensionSection}
         await message.reply(`A rolagem pendente e de <@${game.pendingRoll.playerId}>.`);
         return;
       }
-      game.log.push(`[ROLL] <@${message.author.id}>: ${args}`);
 
-      // Extrai o numero da rolagem para a animação
-      const rollNum = parseInt(args.match(/\d+/)?.[0]) || 0;
+      // Tenta parser expressao de dados (1d20+6, 2d6+3, etc.)
+      const diceResult = rollDiceExpr(args);
+      let rollNum, rollText, animLabel;
+
+      if (diceResult) {
+        // Rolagem automatica — o bot rola os dados
+        rollNum = diceResult.total;
+        const breakdown = diceResult.count > 1
+          ? `(${diceResult.rolls.join(' + ')}${diceResult.mod ? ` ${diceResult.mod >= 0 ? '+' : ''}${diceResult.mod}` : ''})`
+          : (diceResult.mod ? `(${diceResult.natural} ${diceResult.mod >= 0 ? '+' : ''}${diceResult.mod})` : '');
+        animLabel = `${diceResult.expr} ${breakdown}`.trim();
+        rollText = `${diceResult.expr} = **${diceResult.total}**${diceResult.natural ? ` (natural ${diceResult.natural})` : ''} ${breakdown}`;
+        // Para d20, usa o natural para nat 20/1
+        if (diceResult.sides === 20 && diceResult.count === 1) {
+          rollNum = diceResult.natural; // animacao mostra o dado natural
+        }
+      } else {
+        // Numero direto ou texto — comportamento antigo
+        rollNum = parseInt(args.match(/\d+/)?.[0]) || 0;
+        rollText = args;
+        animLabel = 'Rolagem';
+      }
+
+      game.log.push(`[ROLL] <@${message.author.id}>: ${rollText}`);
 
       // Animação + resolução da IA em paralelo
       const [, resolution] = await Promise.all([
         rollNum > 0
-          ? diceRollAnimation(message.channel, { label: 'Rolagem', finalValue: rollNum })
+          ? diceRollAnimation(message.channel, { label: animLabel, finalValue: rollNum })
           : message.channel.send('🎲 Resolvendo...'),
-        dmResolveRoll(game, message.author.id, args),
+        dmResolveRoll(game, message.author.id, rollText),
       ]);
 
       game.log.push(`DM (roll): ${resolution}`);
@@ -2281,7 +2335,7 @@ ${tensionSection}
         // Bloqueia se ha uma rolagem pendente
         if (game.pendingRoll) {
           await message.reply(
-            `Ha uma rolagem pendente de <@${game.pendingRoll.playerId}>. Use \`!roll <resultado>\` primeiro.`,
+            `Ha uma rolagem pendente de <@${game.pendingRoll.playerId}>. Use \`!roll <dados>\` primeiro (ex: \`!roll 1d20+6\`).`,
           );
           return;
         }
@@ -2355,7 +2409,7 @@ ${tensionSection}
       // Bloqueia se ha uma rolagem pendente
       if (game.pendingRoll) {
         await message.reply(
-          `Ha uma rolagem pendente de <@${game.pendingRoll.playerId}>. Use \`!roll <resultado>\` primeiro.`,
+          `Ha uma rolagem pendente de <@${game.pendingRoll.playerId}>. Use \`!roll <dados>\` primeiro (ex: \`!roll 1d20+6\`).`,
         );
         return;
       }
@@ -2436,7 +2490,7 @@ ${tensionSection}
       // Bloqueia se ha rolagem pendente
       if (game.pendingRoll) {
         await message.reply(
-          `Ha uma rolagem pendente de <@${game.pendingRoll.playerId}>. Use \`!roll <resultado>\` primeiro.`,
+          `Ha uma rolagem pendente de <@${game.pendingRoll.playerId}>. Use \`!roll <dados>\` primeiro (ex: \`!roll 1d20+6\`).`,
         );
         return;
       }
