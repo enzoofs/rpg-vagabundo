@@ -136,11 +136,15 @@ CONSEQUENCIAS PERSISTENTES:
 - Flags de mundo indicam eventos permanentes (capela_fechada, ponte_selada, etc.) — respeite-os na narracao.
 - Nunca mostre numeros de relogios, reputacao ou economia ao jogador — apenas consequencias narrativas.
 
-ROLAGENS:
+ROLAGENS — REGRA CRITICA:
+- NUNCA narre o resultado de uma acao incerta (ataque, teste de habilidade, tentativa arriscada) sem pedir rolagem ANTES.
+- O jogador descrever a acao NAO significa que ela acontece. Ataques, furtividade, persuasao, etc. SEMPRE precisam de rolagem.
 - CONSULTE A FICHA DO PC antes de pedir qualquer rolagem.
-- SEMPRE especifique: qual dado, o bonus EXATO (calculado da ficha) e de onde vem. Ex: "Role 1d20+5 de Percepcao (SAB +2 + prof +3)". NUNCA diga apenas "faca um teste" sem o bonus.
-- Para ataques, diga a arma, o bonus de ataque e o dano. Ex: "Role 1d20+6 para ataque com Espada Curta (DES +3 + prof +3). Se acertar: 1d6+3 de dano + 2d6 de Ataque Furtivo."
+- SEMPRE especifique: qual dado, o bonus EXATO (calculado da ficha) e de onde vem. Ex: "Role **1d20+5** de Percepcao (SAB +2 + prof +3), CD 14." NUNCA diga apenas "faca um teste" sem o bonus.
+- Para ataques, diga a arma, o bonus de ataque e o dano. Ex: "Role **1d20+6** para ataque com Espada Curta (DES +3 + prof +3). Se acertar: **1d6+3** de dano + **2d6** de Ataque Furtivo."
+- Para ataques improvisados (cadeira, garrafa, pedra, etc.): bonus de ataque = modificador de FOR + proficiencia, dano = 1d4 + FOR. Trate como arma improvisada.
 - Se a ficha do PC nao estiver registrada, peca ao jogador para registrar com !pc.
+- Quando pedir rolagem, termine sua resposta com [ROLAGEM] na ultima linha (marcador interno).
 
 COMBATE:
 - Alterne descricao curta com clareza mecanica (quem, onde, quanto).
@@ -447,6 +451,7 @@ function freshGame() {
     players: [],
     turnIndex: 0,
     pendingActions: new Map(),
+    pendingRoll: null,  // { playerId } quando aguarda resultado de rolagem
     log: [],
     scene: null,
     opened: false,
@@ -479,6 +484,7 @@ function serializeGame(game) {
     players: game.players,
     turnIndex: game.turnIndex,
     pendingActions: [...game.pendingActions.entries()],
+    pendingRoll: game.pendingRoll || null,
     log: game.log.slice(-100),
     scene: game.scene,
     opened: game.opened || false,
@@ -528,6 +534,7 @@ function deserializeGame(json) {
   game.quests = data.quests || [];
   game.portraits = data.portraits || {};
   game.pcSheets = data.pcSheets || {};
+  game.pendingRoll = data.pendingRoll || null;
   return game;
 }
 
@@ -1097,6 +1104,83 @@ Agora narre a continuacao da cena e diga o proximo turno.
 }
 
 // ---------------------------------------------------------------------------
+// AI: avaliar acao individual de um jogador (pode pedir rolagem)
+// ---------------------------------------------------------------------------
+async function dmSingleAction(game, playerId, action) {
+  const recentLog = game.log.slice(-20).join('\n');
+  const scene = game.scene ? `\nGUIA DA CAMPANHA:\n${game.scene}\n` : '';
+  const canon = canonBlock();
+  const secrets = pcSecretsBlock(game);
+  const worldState = worldStateBlock(game);
+  const sheets = pcSheetsBlock(game);
+
+  const nextPlayer = game.players.find(p => p !== playerId) || playerId;
+
+  const system = `
+Voce e um Dungeon Master (DM) de D&D 5e em portugues brasileiro (pt-BR).
+Um jogador acaba de descrever sua acao. Voce AVALIA se a acao precisa de rolagem.
+
+REGRA CRITICA — NUNCA PULE ROLAGENS:
+- Se o resultado da acao e INCERTO (depende de sorte, habilidade ou oposicao), voce DEVE pedir uma rolagem ANTES de narrar o resultado.
+- NUNCA narre o resultado de uma acao incerta sem pedir rolagem primeiro.
+- O jogador descrever a acao NAO significa que ela acontece automaticamente.
+
+ACOES QUE SEMPRE PRECISAM DE ROLAGEM:
+- Ataques (corpo a corpo, distancia, improvisados com objetos)
+- Testes de habilidade (furtividade, percepcao, persuasao, atletismo, etc.)
+- Tentativas arriscadas (escalar, arrombar, se esconder, desarmar armadilha)
+- Acoes contra NPCs (convencer, intimidar, enganar, surpreender)
+- Qualquer acao com chance de falha
+
+ACOES QUE NAO PRECISAM DE ROLAGEM:
+- Conversar livremente
+- Olhar ao redor (sem buscar algo especifico)
+- Mover-se por areas seguras
+- Pegar objetos acessiveis e a vista
+- Descrever intencoes ou pensamentos
+
+SE A ACAO PRECISA DE ROLAGEM:
+1. Descreva BREVEMENTE a situacao (1-2 frases de contexto, SEM revelar o resultado).
+2. CONSULTE A FICHA DO PC e peca a rolagem com o bonus EXATO.
+   Ex: "Role **1d20+6** para ataque com Espada Curta (DES +3 + prof +3). Se acertar: **1d6+3** de dano."
+   Ex: "Role **1d20+5** de Furtividade (DES +3 + prof +2), CD 14."
+3. Se a ficha nao esta registrada, peca para registrar com !pc.
+4. Termine sua resposta com [ROLAGEM] na ultima linha.
+
+SE A ACAO NAO PRECISA DE ROLAGEM:
+1. Narre o resultado normalmente (2-4 paragrafos curtos).
+2. Termine com "Proximo turno: <@${nextPlayer}>".
+
+REGRAS GERAIS:
+- Nunca controle os personagens dos jogadores.
+- Seja CONCISO: maximo 2-4 paragrafos curtos.
+- NUNCA mude nomes de locais, NPCs ou objetos ja mencionados no historico.
+- NUNCA faca perguntas ao jogador nem liste opcoes.
+${canon}${secrets}${sheets}${worldState}${scene}
+${NARRATIVE_GUARDRAILS}
+`.trim();
+
+  const input = `
+HISTORICO (resumo recente):
+${recentLog}
+
+ACAO DE <@${playerId}>: ${action}
+
+Avalie a acao e responda conforme as regras.
+`.trim();
+
+  const resp = await openai.responses.create({
+    model: 'gpt-5.2',
+    input: [
+      { role: 'system', content: system },
+      { role: 'user', content: input },
+    ],
+  });
+
+  return resp.output_text ?? '(sem texto)';
+}
+
+// ---------------------------------------------------------------------------
 // !ask — resposta direta e curta sobre o ambiente
 // ---------------------------------------------------------------------------
 async function dmAsk(game, question) {
@@ -1173,6 +1257,8 @@ async function dmResolveRoll(game, playerId, rollText) {
   const secrets = pcSecretsBlock(game);
   const sheets = pcSheetsBlock(game);
 
+  const nextPlayer = game.players.find(p => p !== playerId) || playerId;
+
   const system = `
 Voce e um Dungeon Master de D&D 5e em portugues brasileiro (pt-BR).
 O jogador acabou de informar o resultado de uma rolagem que voce pediu.
@@ -1183,18 +1269,17 @@ REGRAS RIGIDAS:
 - Descreva o que acontece (sucesso, falha ou sucesso parcial) de forma narrativa.
 - NAO faca novas perguntas. NAO liste opcoes.
 - NUNCA mude nomes ja estabelecidos no historico.
-- Termine com "Proximo turno: <@ID>" indicando quem age em seguida.
+- Se a resolucao exigir OUTRA rolagem (ex: rolagem de dano apos acerto de ataque), peca com bonus EXATO e termine com [ROLAGEM].
+- Se NAO precisar de outra rolagem, termine com "Proximo turno: <@${nextPlayer}>".
 ${canon}${secrets}${sheets}${worldState}
 ${NARRATIVE_GUARDRAILS}
 `.trim();
-
-  const nextPlayer = game.players.find(p => p !== playerId) || playerId;
 
   const resp = await openai.responses.create({
     model: 'gpt-5.2',
     input: [
       { role: 'system', content: system },
-      { role: 'user', content: `HISTORICO RECENTE:\n${recentLog}\n\nRESULTADO DA ROLAGEM de <@${playerId}>: ${rollText}\n\nResolva a acao e diga "Proximo turno: <@${nextPlayer}>".` },
+      { role: 'user', content: `HISTORICO RECENTE:\n${recentLog}\n\nRESULTADO DA ROLAGEM de <@${playerId}>: ${rollText}\n\nResolva a acao. Se precisar de outra rolagem, peca e termine com [ROLAGEM]. Senao, termine com "Proximo turno: <@${nextPlayer}>".` },
     ],
   });
 
@@ -1729,6 +1814,7 @@ ${tensionSection}
       }
       game.turnIndex = 0;
       game.pendingActions.clear();
+      game.pendingRoll = null;
       game.log.push('A aventura comecou.');
 
       // Posta onboarding
@@ -1841,6 +1927,11 @@ ${tensionSection}
         await message.reply('Voce nao esta na mesa.');
         return;
       }
+      // Se ha pendingRoll, so o jogador correto pode rolar
+      if (game.pendingRoll && game.pendingRoll.playerId !== message.author.id) {
+        await message.reply(`A rolagem pendente e de <@${game.pendingRoll.playerId}>.`);
+        return;
+      }
       game.log.push(`[ROLL] <@${message.author.id}>: ${args}`);
 
       // Extrai o numero da rolagem para a animação
@@ -1855,11 +1946,38 @@ ${tensionSection}
       ]);
 
       game.log.push(`DM (roll): ${resolution}`);
+
+      // Verifica se a resolucao pede OUTRA rolagem (ex: dano apos acerto)
+      const resNeedsRoll = resolution.includes('[ROLAGEM]');
+      const cleanResolution = resolution.replace(/\[ROLAGEM\]/g, '').trim();
+
       await sendEmbed(message.channel, {
         color: COLORS.ROLL,
         title: '🎲 Resolução',
-        description: resolution,
+        description: cleanResolution,
       });
+
+      if (resNeedsRoll) {
+        // A resolucao pede outra rolagem — mantém pendingRoll
+        game.pendingRoll = { playerId: message.author.id };
+      } else if (game.pendingRoll) {
+        // Rolagem resolvida — limpa pendingRoll e avanca turno
+        game.pendingRoll = null;
+
+        if (game.combat.active) {
+          // Modo combate: avanca turno de combate e roda NPCs
+          advanceCombatTurn(game);
+          await runNpcTurns(message.channel, game);
+        } else {
+          // Modo historia: avanca turno para o proximo jogador
+          game.turnIndex = (game.turnIndex + 1) % game.players.length;
+          const nextP = currentPlayerId(game);
+          await sendEmbed(message.channel, {
+            color: COLORS.SYSTEM,
+            description: `🎲 Proximo turno: <@${nextP}> (use \`!act <acao>\` ou \`!pass\`).`,
+          });
+        }
+      }
       return;
     }
 
@@ -1897,6 +2015,7 @@ ${tensionSection}
 
       if (sub === 'end') {
         game.combat = freshCombat();
+        game.pendingRoll = null;
         game.log.push('Combate encerrado.');
         await sendEmbed(message.channel, {
           color: COLORS.SUCCESS,
@@ -2159,6 +2278,13 @@ ${tensionSection}
           await message.reply('Voce nao esta na mesa.');
           return;
         }
+        // Bloqueia se ha uma rolagem pendente
+        if (game.pendingRoll) {
+          await message.reply(
+            `Ha uma rolagem pendente de <@${game.pendingRoll.playerId}>. Use \`!roll <resultado>\` primeiro.`,
+          );
+          return;
+        }
         const entry = currentCombatEntry(game);
         if (
           !entry ||
@@ -2179,7 +2305,6 @@ ${tensionSection}
 
         game.log.push(`Jogador <@${message.author.id}>: ${args}`);
         const hChanges = applyHeuristics(game, args, true);
-        await message.reply(`Acao registrada: ${args}`);
         if (hChanges.length) {
           await sendEmbed(message.channel, {
             color: COLORS.SYSTEM,
@@ -2187,8 +2312,32 @@ ${tensionSection}
           });
         }
 
-        advanceCombatTurn(game);
-        await runNpcTurns(message.channel, game);
+        // Chama a IA para avaliar a acao de combate
+        await message.channel.send('🤖 DM esta avaliando...');
+        const combatResp = await dmSingleAction(game, message.author.id, args);
+        const combatNeedsRoll = combatResp.includes('[ROLAGEM]');
+        const combatClean = combatResp.replace(/\[ROLAGEM\]/g, '').trim();
+
+        if (combatNeedsRoll) {
+          game.pendingRoll = { playerId: message.author.id };
+          game.log.push(`DM: ${combatClean}`);
+          await sendEmbed(message.channel, {
+            color: COLORS.ROLL,
+            title: '🎲 Rolagem Necessária',
+            description: combatClean,
+            footer: `⚔️ Round ${c.round}`,
+          });
+        } else {
+          game.log.push(`DM: ${combatClean}`);
+          await sendEmbed(message.channel, {
+            color: COLORS.NARRATION,
+            title: '📜 Narração',
+            description: combatClean,
+            footer: `⚔️ Round ${c.round}`,
+          });
+          advanceCombatTurn(game);
+          await runNpcTurns(message.channel, game);
+        }
         return;
       }
 
@@ -2203,6 +2352,13 @@ ${tensionSection}
         await message.reply('Voce nao esta na mesa.');
         return;
       }
+      // Bloqueia se ha uma rolagem pendente
+      if (game.pendingRoll) {
+        await message.reply(
+          `Ha uma rolagem pendente de <@${game.pendingRoll.playerId}>. Use \`!roll <resultado>\` primeiro.`,
+        );
+        return;
+      }
       const expected = currentPlayerId(game);
       if (message.author.id !== expected) {
         await message.reply(
@@ -2215,10 +2371,10 @@ ${tensionSection}
         return;
       }
 
+      const cleanArgs = args.replace(/#publico/gi, '').trim();
+      game.log.push(`Jogador <@${message.author.id}>: ${cleanArgs}`);
       const isPublic = args.includes('#publico');
-      game.pendingActions.set(message.author.id, args.replace(/#publico/gi, '').trim());
-      game.log.push(`Jogador <@${message.author.id}>: ${args}`);
-      const hChanges = applyHeuristics(game, args, isPublic);
+      const hChanges = applyHeuristics(game, cleanArgs, isPublic);
       if (hChanges.length) {
         await sendEmbed(message.channel, {
           color: COLORS.SYSTEM,
@@ -2226,42 +2382,49 @@ ${tensionSection}
         });
       }
 
-      game.turnIndex = (game.turnIndex + 1) % game.players.length;
-      const next = currentPlayerId(game);
+      // Chama a IA imediatamente para avaliar a acao deste jogador
+      await message.channel.send('🤖 DM esta avaliando...');
+      const response = await dmSingleAction(game, message.author.id, cleanArgs);
+      const needsRoll = response.includes('[ROLAGEM]');
+      const cleanResponse = response.replace(/\[ROLAGEM\]/g, '').trim();
 
-      if (!game.pendingActions.has(next)) {
-        await message.reply(
-          `Acao registrada. \uD83C\uDFB2 Proximo turno: <@${next}> (use \`!act <acao>\`).`,
-        );
-        return;
-      }
-
-      await message.channel.send('🤖 DM esta narrando...');
-      const narration = await dmNarrate(game);
-      game.log.push(`DM: ${narration}`);
-      game.pendingActions.clear();
-      await sendEmbed(message.channel, {
-        color: COLORS.NARRATION,
-        title: '📜 Narração',
-        description: narration,
-        footer: timeFooter(game.consequences),
-      });
-      game.consequences.timeOfDay = advanceTimeOfDay(game.consequences.timeOfDay);
-      detectAndGeneratePortraits(message.channel, game, narration);
-
-      // Lembretes sutis de comandos uteis (1 em 4 narracoes)
-      if (Math.random() < 0.25) {
-        const hints = [
-          '💡 `!ask` para perguntar algo ao DM | `!context` para resumo da cena',
-          '💡 `!inv` para ver inventario | `!quest` para quests ativas',
-          '💡 `!pc sheet` para ver sua ficha | `!recap` para resumo da sessao',
-          '💡 `!world` para ver o estado do mundo',
-        ];
-        const hint = hints[Math.floor(Math.random() * hints.length)];
+      if (needsRoll) {
+        // Acao precisa de rolagem — pausa o turno e aguarda !roll
+        game.pendingRoll = { playerId: message.author.id };
+        game.log.push(`DM: ${cleanResponse}`);
         await sendEmbed(message.channel, {
-          color: COLORS.SYSTEM,
-          description: hint,
+          color: COLORS.ROLL,
+          title: '🎲 Rolagem Necessária',
+          description: cleanResponse,
+          footer: timeFooter(game.consequences),
         });
+      } else {
+        // Acao certa — narra e avanca turno
+        game.log.push(`DM: ${cleanResponse}`);
+        game.turnIndex = (game.turnIndex + 1) % game.players.length;
+        await sendEmbed(message.channel, {
+          color: COLORS.NARRATION,
+          title: '📜 Narração',
+          description: cleanResponse,
+          footer: timeFooter(game.consequences),
+        });
+        game.consequences.timeOfDay = advanceTimeOfDay(game.consequences.timeOfDay);
+        detectAndGeneratePortraits(message.channel, game, cleanResponse);
+
+        // Lembretes sutis de comandos uteis (1 em 4 narracoes)
+        if (Math.random() < 0.25) {
+          const hints = [
+            '💡 `!ask` para perguntar algo ao DM | `!context` para resumo da cena',
+            '💡 `!inv` para ver inventario | `!quest` para quests ativas',
+            '💡 `!pc sheet` para ver sua ficha | `!recap` para resumo da sessao',
+            '💡 `!world` para ver o estado do mundo',
+          ];
+          const hint = hints[Math.floor(Math.random() * hints.length)];
+          await sendEmbed(message.channel, {
+            color: COLORS.SYSTEM,
+            description: hint,
+          });
+        }
       }
       return;
     }
@@ -2270,6 +2433,14 @@ ${tensionSection}
     // !pass
     // -----------------------------------------------------------------------
     if (cmd === '!pass') {
+      // Bloqueia se ha rolagem pendente
+      if (game.pendingRoll) {
+        await message.reply(
+          `Ha uma rolagem pendente de <@${game.pendingRoll.playerId}>. Use \`!roll <resultado>\` primeiro.`,
+        );
+        return;
+      }
+
       // ---------- COMBAT MODE ----------
       if (game.combat.active) {
         const c = game.combat;
@@ -2309,37 +2480,18 @@ ${tensionSection}
         await message.reply('Voce nao esta na mesa.');
         return;
       }
-      const expected = currentPlayerId(game);
-      if (message.author.id !== expected) {
-        await message.reply(`Agora e o turno de <@${expected}>.`);
+      const expectedPass = currentPlayerId(game);
+      if (message.author.id !== expectedPass) {
+        await message.reply(`Agora e o turno de <@${expectedPass}>.`);
         return;
       }
 
-      game.pendingActions.set(message.author.id, '(passa o turno)');
       game.log.push(`Jogador <@${message.author.id}>: (passa o turno)`);
-
       game.turnIndex = (game.turnIndex + 1) % game.players.length;
       const nextP = currentPlayerId(game);
-
-      if (!game.pendingActions.has(nextP)) {
-        await message.reply(
-          `Ok. \uD83C\uDFB2 Proximo turno: <@${nextP}> (use \`!act\` ou \`!pass\`).`,
-        );
-        return;
-      }
-
-      await message.channel.send('🤖 DM esta narrando...');
-      const narration = await dmNarrate(game);
-      game.log.push(`DM: ${narration}`);
-      game.pendingActions.clear();
-      await sendEmbed(message.channel, {
-        color: COLORS.NARRATION,
-        title: '📜 Narração',
-        description: narration,
-        footer: timeFooter(game.consequences),
-      });
-      game.consequences.timeOfDay = advanceTimeOfDay(game.consequences.timeOfDay);
-      detectAndGeneratePortraits(message.channel, game, narration);
+      await message.reply(
+        `Ok. \uD83C\uDFB2 Proximo turno: <@${nextP}> (use \`!act\` ou \`!pass\`).`,
+      );
       return;
     }
 
