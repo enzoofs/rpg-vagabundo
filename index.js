@@ -1812,7 +1812,10 @@ client.on('messageCreate', async (message) => {
   if (message.channel.id !== GAME_CHANNEL_ID) return;
 
   // Impede processamento duplicado (ex: usuario clica Enter 2x rapido)
-  if (processingLock.has(message.author.id)) return;
+  if (processingLock.has(message.author.id)) {
+    await message.reply('⏳ Seu comando anterior ainda esta sendo processado. Aguarde.');
+    return;
+  }
   processingLock.add(message.author.id);
 
   const [cmd, ...rest] = content.split(/\s+/);
