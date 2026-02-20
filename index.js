@@ -105,6 +105,7 @@ GUARDRAILS NARRATIVOS (siga sempre):
 - NUNCA liste opcoes numeradas de escolha. O jogador decide sozinho o que fazer.
 - CONSISTENCIA: nunca mude nomes de locais, NPCs ou objetos ja estabelecidos no historico. Se um lugar foi chamado "Javali Palido", NUNCA troque para outro nome. Consulte o historico antes de inventar.
 - Toda cena deve ter: (1) detalhe sensorial, (2) reacao do mundo. Sem railroading.
+- NAO REPITA detalhes ja estabelecidos. Se ja foi dito que esta frio, escuro, chovendo ou no beco, NAO repita isso nas proximas respostas. Apenas mencione novamente se algo MUDAR ou se o jogador perguntar. Cada resposta deve trazer informacao NOVA, nao reafirmar o que o jogador ja sabe. Avance a cena, nao a decore de novo.
 
 SISTEMA DE PISTAS (3-Clue Rule):
 - Cada misterio tem 3 camadas: SOCIAL (conversas/rumores), AMBIENTAL (exploracao/observacao), CONSEQUENCIA (o mundo reage).
@@ -1800,12 +1801,19 @@ function isDM(message) {
 // ---------------------------------------------------------------------------
 // Handler principal
 // ---------------------------------------------------------------------------
+// Trava de processamento — impede que dois comandos do mesmo jogador rodem em paralelo
+const processingLock = new Set();
+
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
 
   const content = message.content.trim();
   if (!content.startsWith('!')) return;
   if (message.channel.id !== GAME_CHANNEL_ID) return;
+
+  // Impede processamento duplicado (ex: usuario clica Enter 2x rapido)
+  if (processingLock.has(message.author.id)) return;
+  processingLock.add(message.author.id);
 
   const [cmd, ...rest] = content.split(/\s+/);
   const args = rest.join(' ');
@@ -3675,6 +3683,7 @@ FORMATO OBRIGATORIO:
   } finally {
     // Auto-save apos cada comando processado
     saveGame(channelId, game);
+    processingLock.delete(message.author.id);
   }
 });
 
